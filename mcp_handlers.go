@@ -535,6 +535,28 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 	}
 }
 
+// handleGetMyCollections 获取当前登录用户的收藏
+func (s *AppServer) handleGetMyCollections(ctx context.Context) *MCPToolResult {
+	logrus.Info("MCP: 获取我的收藏")
+	items, err := s.xiaohongshuService.GetMyCollections(ctx)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: "获取收藏失败: " + err.Error(),
+			}},
+			IsError: true,
+		}
+	}
+	jsonData, _ := json.MarshalIndent(map[string]any{"count": len(items), "collections": items}, "", "  ")
+	return &MCPToolResult{
+		Content: []MCPContent{{
+			Type: "text",
+			Text: string(jsonData),
+		}},
+	}
+}
+
 // handleLikeFeed 处理点赞/取消点赞
 func (s *AppServer) handleLikeFeed(ctx context.Context, args map[string]interface{}) *MCPToolResult {
 	feedID, ok := args["feed_id"].(string)
@@ -741,4 +763,29 @@ func (s *AppServer) handleReplyComment(ctx context.Context, args map[string]inte
 			Text: responseText,
 		}},
 	}
+}
+
+// handleSendSmsCode 手机号登录第一步：发送短信验证码
+func (s *AppServer) handleSendSmsCode(ctx context.Context, phone string) *MCPToolResult {
+	if phone == "" {
+		return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: "发送验证码失败: 缺少 phone 参数"}}, IsError: true}
+	}
+	logrus.Infof("MCP: 发送短信验证码 phone=%s", phone)
+	if err := s.xiaohongshuService.SendSmsCode(ctx, phone); err != nil {
+		return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: "发送验证码失败: " + err.Error()}}, IsError: true}
+	}
+	return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: "验证码已发送到 " + phone + "，请查收短信后用 login_with_sms 提交验证码。"}}}
+}
+
+// handleLoginWithSms 手机号登录第二步：提交验证码完成登录
+func (s *AppServer) handleLoginWithSms(ctx context.Context, code string) *MCPToolResult {
+	if code == "" {
+		return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: "登录失败: 缺少 code 参数"}}, IsError: true}
+	}
+	logrus.Info("MCP: 提交短信验证码登录")
+	status, err := s.xiaohongshuService.SubmitSmsCode(ctx, code)
+	if err != nil {
+		return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: "登录失败: " + err.Error()}}, IsError: true}
+	}
+	return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: fmt.Sprintf("✅ 登录成功，用户名: %s", status.Username)}}}
 }

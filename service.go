@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -19,7 +20,13 @@ import (
 )
 
 // XiaohongshuService 小红书业务服务
-type XiaohongshuService struct{}
+type XiaohongshuService struct {
+	// 手机号登录的会话保持：send_sms_code 打开浏览器发验证码后不关，
+	// login_with_sms 复用同一 page 提交验证码。loginMu 串行化两步。
+	loginMu      sync.Mutex
+	loginBrowser *headless_browser.Browser
+	loginPage    *rod.Page
+}
 
 // NewXiaohongshuService 创建小红书服务实例
 func NewXiaohongshuService() *XiaohongshuService {
@@ -611,4 +618,83 @@ func (s *XiaohongshuService) GetMyProfile(ctx context.Context) (*UserProfileResp
 	}
 
 	return response, nil
+}
+
+// GetMyCollections 获取当前登录用户自己收藏的笔记列表
+func (s *XiaohongshuService) GetMyCollections(ctx context.Context) ([]xiaohongshu.CollectionItem, error) {
+	var result []xiaohongshu.CollectionItem
+
+	err := withBrowserPage(func(page *rod.Page) error {
+		action := xiaohongshu.NewCollectionsAction(page)
+		r, e := action.GetMyCollections(ctx)
+		result = r
+		return e
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
+}
+
+// closeLoginSession 关闭并清空保持中的登录浏览器会话（调用方需持有 loginMu）。
+func (s *XiaohongshuService) closeLoginSession() {
+	if s.loginPage != nil {
+		_ = s.loginPage.Close()
+		s.loginPage = nil
+	}
+	if s.loginBrowser != nil {
+		s.loginBrowser.Close()
+		s.loginBrowser = nil
+	}
+}
+
+// SendSmsCode 手机号登录第一步：填手机号、请求短信验证码，并保持浏览器会话待第二步提交。
+func (s *XiaohongshuService) SendSmsCode(ctx context.Context, phone string) error {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+
+	// 清掉上一次未完成的登录会话
+	s.closeLoginSession()
+
+	b := newBrowser()
+	page := b.NewPage()
+	if err := xiaohongshu.NewLogin(page).SendSmsCode(ctx, phone); err != nil {
+		_ = page.Close()
+		b.Close()
+		return err
+	}
+
+	// 保持会话，等 SubmitSmsCode 复用
+	s.loginBrowser = b
+	s.loginPage = page
+	return nil
+}
+
+// SubmitSmsCode 手机号登录第二步：用保持的会话提交验证码，成功后存 cookies 并返回账号信息。
+func (s *XiaohongshuService) SubmitSmsCode(ctx context.Context, code string) (*LoginStatusResponse, error) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+
+	if s.loginPage == nil {
+		return nil, fmt.Errorf("没有进行中的登录会话，请先调用 send_sms_code 获取验证码")
+	}
+	defer s.closeLoginSession()
+
+	action := xiaohongshu.NewLogin(s.loginPage)
+	if err := action.SubmitSmsCode(ctx, code); err != nil {
+		return nil, err
+	}
+
+	// 登录成功：保存 cookies（持久化到 COOKIES_PATH，后续操作免登录）
+	if err := saveCookies(s.loginPage); err != nil {
+		logrus.Errorf("failed to save cookies after sms login: %v", err)
+	}
+
+	resp := &LoginStatusResponse{IsLoggedIn: true}
+	if user, err := action.CurrentUser(ctx); err == nil {
+		resp.Username = user.Nickname
+		resp.UserID = user.UserID
+	}
+	return resp, nil
 }

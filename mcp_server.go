@@ -244,6 +244,54 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 		}),
 	)
 
+	// 工具: 获取我的收藏（当前登录用户自己收藏的笔记）
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "get_my_collections",
+			Description: "获取当前登录用户自己收藏的笔记列表（返回每篇的 id、xsec_token、标题）。需已登录。",
+			Annotations: &mcp.ToolAnnotations{
+				Title:        "Get My Collections",
+				ReadOnlyHint: true,
+			},
+		},
+		withPanicRecovery("get_my_collections", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+			result := appServer.handleGetMyCollections(ctx)
+			return convertToMCPResult(result), nil, nil
+		}),
+	)
+
+	// 手机号登录参数（局部类型，仅这两个工具用）
+	type sendSmsArgs struct {
+		Phone string `json:"phone" jsonschema:"登录手机号（11 位）"`
+	}
+	type loginSmsArgs struct {
+		Code string `json:"code" jsonschema:"手机收到的短信验证码"`
+	}
+
+	// 工具: 手机号登录第一步——发送短信验证码
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "send_sms_code",
+			Description: "手机号登录第一步：填手机号并请求发送短信验证码。之后用 login_with_sms 提交验证码完成登录。",
+			Annotations: &mcp.ToolAnnotations{Title: "Send SMS Code"},
+		},
+		withPanicRecovery("send_sms_code", func(ctx context.Context, req *mcp.CallToolRequest, args sendSmsArgs) (*mcp.CallToolResult, any, error) {
+			return convertToMCPResult(appServer.handleSendSmsCode(ctx, args.Phone)), nil, nil
+		}),
+	)
+
+	// 工具: 手机号登录第二步——提交短信验证码
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "login_with_sms",
+			Description: "手机号登录第二步：提交手机收到的短信验证码完成登录。需先调用 send_sms_code。",
+			Annotations: &mcp.ToolAnnotations{Title: "Login With SMS"},
+		},
+		withPanicRecovery("login_with_sms", func(ctx context.Context, req *mcp.CallToolRequest, args loginSmsArgs) (*mcp.CallToolResult, any, error) {
+			return convertToMCPResult(appServer.handleLoginWithSms(ctx, args.Code)), nil, nil
+		}),
+	)
+
 	// 工具 6: 搜索内容
 	mcp.AddTool(server,
 		&mcp.Tool{
