@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-rod/rod"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 type LoginAction struct {
@@ -154,6 +155,30 @@ func (a *LoginAction) SendSmsCode(ctx context.Context, phone string) error {
 		return errors.Wrap(err, "未找到手机号输入框（登录弹窗未出现或结构变化）")
 	}
 	phoneInput.MustInput(phone)
+
+	// 勾选「我已阅读并同意《用户协议》」——小红书不勾这个不会下发验证码。
+	// 复选框是自定义元素(常是 svg 图标)，svg 上没有 click()，故从候选往上找真正可点击(有 click 方法)的元素。
+	// 返回勾选前后复选框区域的 outerHTML 片段，写日志便于核对结构。
+	// 复选框是「我已阅读并同意」文字块之前的自定义元素(常是 svg 图标，svg 无 click，
+	// 故 clickUp 向上找可点击祖先)；从协议行/祖父行里、文字块之前的元素逐个点，命中即勾选成功。
+	agreeClicked := pp.MustEval(`() => {
+		const clickUp = (el) => { let t = el; while (t && typeof t.click !== 'function') t = t.parentElement; if (t) { t.click(); return true; } return false; };
+		const agree = [...document.querySelectorAll('*')].find(e => e.children.length===0 && /我已阅读并同意/.test(e.textContent || ''));
+		if (!agree) return false;
+		const textDiv = agree.closest('div') || agree.parentElement;
+		const row = textDiv && textDiv.parentElement;
+		const grand = row && row.parentElement;
+		const cands = [];
+		if (row) for (const ch of row.children) { if (ch === textDiv || (ch.contains && ch.contains(textDiv))) break; cands.push(ch); }
+		if (grand) for (const ch of grand.children) { if (ch === row || (ch.contains && ch.contains(textDiv))) break; cands.push(ch); }
+		for (const c of cands) { if (clickUp(c)) return true; }
+		const p = textDiv && textDiv.previousElementSibling;
+		return p ? clickUp(p) : false;
+	}`).Bool()
+	if !agreeClicked {
+		logrus.Warn("send_sms_code: 未能勾选同意协议(页面结构可能变化)，仍尝试发送")
+	}
+	time.Sleep(600 * time.Millisecond)
 
 	// 点「获取验证码」（是文字元素，非标准 button）
 	clicked := pp.MustEval(`() => {
